@@ -1,85 +1,119 @@
 from .base_agent import BaseAgent
-from config import MESSAGE_TYPES
-from .message import Message
+from .mcp_message import MCPMessage, MCPPerformatives
 import logging
 import json
+import random
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
 class TravelAgent(BaseAgent):
-    def __init__(self, context, endpoint):
-        super().__init__(context, endpoint)
+    def __init__(self, agent_id, endpoint):
+        super().__init__(agent_id, endpoint)
         self.travel_options = {
             "Goa": [
                 {
                     "type": "flight",
                     "airline": "Air India",
-                    "departure": "10:00",
-                    "arrival": "12:00",
                     "price": 5000,
-                    "class": "economy"
+                    "duration": "2h 30m"
                 },
                 {
                     "type": "train",
-                    "train_name": "Goa Express",
-                    "departure": "18:00",
-                    "arrival": "08:00",
-                    "price": 1500,
-                    "class": "sleeper"
+                    "name": "Goa Express",
+                    "price": 2000,
+                    "duration": "12h"
                 }
             ],
             "Mumbai": [
                 {
                     "type": "flight",
                     "airline": "IndiGo",
-                    "departure": "09:00",
-                    "arrival": "11:00",
                     "price": 4000,
-                    "class": "economy"
+                    "duration": "2h"
+                },
+                {
+                    "type": "train",
+                    "name": "Rajdhani Express",
+                    "price": 1500,
+                    "duration": "8h"
                 }
             ]
         }
+        logger.info("TravelAgent initialized")
+
+    async def start(self):
+        """Start the agent and notify the planner"""
+        await super().start()
+        logger.info("Travel Agent : Starting")
+        # Perform handshake with planner
+        await self.perform_handshake("planner")
+        logger.info("Travel Agent : Handshake initiated with planner")
 
     async def handle_message(self, message):
-        """Handle incoming messages"""
-        if message.msg_type == MESSAGE_TYPES["REQUEST"]:
-            try:
-                request_data = json.loads(message.content)
-                trip_id = request_data.get("trip_id")
-                destination = request_data.get("destination", "Goa")
-                dates = request_data.get("dates", {})
+        """Handle incoming MCP messages"""
+        logger.info(f"TravelAgent received message: {message.performative} from {message.sender}")
+        logger.info(f"Message content: {message.content}")
+        
+        try:
+            content = json.loads(message.content)
+            
+            # Handle connection messages first
+            if content.get("type") in ["connect", "connected"]:
+                if await self.handle_connection_message(message):
+                    return
+                
+            if message.performative == MCPPerformatives.CFP:
+                trip_id = content.get("trip_id")
+                destination = content.get("destination")
+                dates = content.get("dates", {})
                 
                 logger.info(f"Processing travel request for {destination}")
                 
                 # Get travel options for the destination
                 options = self._get_travel_options(destination, dates)
                 
-                # Send response back to planner
-                response = Message(
-                    msg_type=MESSAGE_TYPES["RESPONSE"],
+                # Create response
+                response = MCPMessage(
+                    performative=MCPPerformatives.PROPOSE,
                     content=json.dumps({
                         "trip_id": trip_id,
-                        "options": options,
-                        "status": "success"
+                        "options": options
                     }),
-                    sender="travel",
+                    sender=self.agent_id,
+                    receiver=message.sender
+                )
+                
+                logger.info("Sending travel options")
+                await self.send_message(response)
+                logger.info("Travel options sent")
+                
+            elif message.performative == MCPPerformatives.ACCEPT_PROPOSAL:
+                trip_id = content.get("trip_id")
+                selected_option = content.get("selected_option")
+                
+                # Confirm the booking
+                response = MCPMessage(
+                    performative=MCPPerformatives.CONFIRM,
+                    content=json.dumps({
+                        "trip_id": trip_id,
+                        "status": "booked",
+                        "booking_id": f"TRAVEL-{random.randint(1000, 9999)}",
+                        "selected_option": selected_option,
+                        "message": "Travel booking confirmed"
+                    }),
+                    sender=self.agent_id,
                     receiver=message.sender
                 )
                 await self.send_message(response)
                 
-            except json.JSONDecodeError:
-                logger.error("Invalid JSON in request")
-                response = Message(
-                    msg_type=MESSAGE_TYPES["RESPONSE"],
-                    content=json.dumps({
-                        "status": "error",
-                        "message": "Invalid request format"
-                    }),
-                    sender="travel",
-                    receiver=message.sender
-                )
-                await self.send_message(response)
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON in message content")
+            response = message.create_reply(
+                MCPPerformatives.FAILURE,
+                "Invalid message format"
+            )
+            await self.send_message(response)
 
     def _get_travel_options(self, destination, dates):
         """Get travel options for the given destination and dates"""

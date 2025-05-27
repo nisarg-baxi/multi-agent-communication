@@ -1,97 +1,66 @@
 import asyncio
-import zmq
-import zmq.asyncio
+import logging
 from agents.planner_agent import PlannerAgent
 from agents.travel_agent import TravelAgent
 from agents.hotel_agent import HotelAgent
-from config import AGENT_ENDPOINTS, MESSAGE_TYPES
-from agents.message import Message
-import logging
-import json
-from datetime import datetime, timedelta
+from config import AGENT_ENDPOINTS
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-async def start_agent(agent, name, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            await agent.start()
-            logger.info(f"{name} agent started successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Attempt {attempt + 1} failed for {name} agent: {str(e)}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2)
-            else:
-                raise
-    return False
-
 async def main():
-    agents = {}
     try:
-        # Initialize ZMQ context
-        context = zmq.asyncio.Context()
-
-        logger.info("Initializing agents...")
-        agents["planner"] = PlannerAgent(context, AGENT_ENDPOINTS["planner"])
-        agents["travel"] = TravelAgent(context, AGENT_ENDPOINTS["travel"])
-        agents["hotel"] = HotelAgent(context, AGENT_ENDPOINTS["hotel"])
-
-        # Start agents with retry logic
-        for name, agent in agents.items():
-            await start_agent(agent, name)
-
-        # Wait for agents to initialize
-        await asyncio.sleep(2)
-
-        # Create trip request
-        tomorrow = datetime.now() + timedelta(days=1)
-        next_week = tomorrow + timedelta(days=7)
-        
-        trip_request = {
-            "trip_id": "TRIP001",
-            "destination": "Goa",
-            "dates": {
-                "departure": tomorrow.strftime("%Y-%m-%d"),
-                "return": next_week.strftime("%Y-%m-%d")
-            },
-            "preferences": {
-                "budget": "mid-range",
-                "travel_type": "flexible"
-            }
-        }
-
-        # Send initial message
-        msg = Message(
-            msg_type=MESSAGE_TYPES["REQUEST"],
-            content=json.dumps(trip_request),
-            sender="travel",
-            receiver="planner"
+        # Initialize planner first
+        planner = PlannerAgent(
+            "planner", 
+            AGENT_ENDPOINTS["planner"],
+            travel_agent_id="travel",
+            hotel_agent_id="hotel"
         )
-        await agents["travel"].send_message(msg)
-        logger.info("Trip request sent to planner")
+        
+        # Initialize travel and hotel agents to connect to planner
+        travel = TravelAgent("travel", AGENT_ENDPOINTS["planner"])
+        hotel = HotelAgent("hotel", AGENT_ENDPOINTS["planner"])
+        
+        # Start planner first and wait for it to be ready
+        logger.info("Starting planner agent...")
+        await planner.start()
+        logger.info("Planner agent started")
+        await asyncio.sleep(1)  # Give planner time to bind
+        
+        # Start travel agent
+        logger.info("Starting travel agent...")
+        await travel.start()
+        logger.info("Travel agent started")
+        await asyncio.sleep(1)  # Give travel agent time to connect
+        
+        # Start hotel agent
+        logger.info("Starting hotel agent...")
+        await hotel.start()
+        logger.info("Hotel agent started")
+        await asyncio.sleep(1)  # Give hotel agent time to connect
 
-        logger.info("System started. Press Ctrl+C to stop.")
+        logger.info("All agents started successfully")
+        
+        # Keep the main process running
         while True:
             await asyncio.sleep(1)
-
+            
     except KeyboardInterrupt:
         logger.info("Received shutdown signal")
     except Exception as e:
-        logger.error(f"Error occurred: {str(e)}")
-        raise
+        logger.error(f"Error in main: {str(e)}")
     finally:
-        # Cleanup
+        # Stop agents in reverse order
         logger.info("Stopping agents...")
-        for name, agent in agents.items():
-            try:
-                await agent.stop()
-                logger.info(f"{name} agent stopped")
-            except Exception as e:
-                logger.error(f"Error stopping {name} agent: {str(e)}")
-        context.term()
+        await hotel.stop()
+        await travel.stop()
+        await planner.stop()
+        logger.info("All agents stopped")
 
 if __name__ == "__main__":
     asyncio.run(main())

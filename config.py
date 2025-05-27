@@ -1,8 +1,8 @@
 # ZMQ Communication endpoints
 AGENT_ENDPOINTS = {
-    "planner": "inproc://planner",
-    "travel": "inproc://travel",
-    "hotel": "inproc://hotel"
+    "planner": "tcp://127.0.0.1:5555",
+    "travel": "tcp://127.0.0.1:5556",
+    "hotel": "tcp://127.0.0.1:5557"
 }
 
 # Message types
